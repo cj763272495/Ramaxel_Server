@@ -19,8 +19,10 @@ MainWindow::MainWindow(QWidget *parent) :
 {
     ui->setupUi(this);
 
-    this->tcpServer = NULL;
-    this->tcpSocket = NULL;
+    this->tcpServer = nullptr;
+    this->tcpSocket = nullptr;
+    this->tcpReg = nullptr;
+
     this->ui->label_IP->setText(this->GetLocalIPAddress());
     this->initConnect();
 }
@@ -28,13 +30,17 @@ MainWindow::MainWindow(QWidget *parent) :
 MainWindow::~MainWindow()
 {
     delete ui;
-    if(this->tcpSocket != NULL) {
+    if(this->tcpSocket != nullptr) {
         this->tcpSocket->close();
         delete this->tcpSocket;
     }
-    if(this->tcpServer != NULL) {
+    if(this->tcpServer != nullptr) {
         this->tcpServer->close();
         delete this->tcpServer;
+    }
+    if(this->tcpReg != nullptr) {
+        this->tcpReg->close();
+        delete this->tcpReg;
     }
 }
 
@@ -55,12 +61,19 @@ void MainWindow::initConnect()
 void MainWindow::startTcpServer()
 {
     this->tcpServer = new QTcpServer(this);
+    this->tcpReg = new QTcpServer(this);
     int port = this->ui->port_edit->text().toUInt();
-    this->tcpServer->listen(QHostAddress::Any,port);
-    connect(this->tcpServer,SIGNAL(newConnection()),this,SLOT(newConnect()));
-    qDebug()<<"服务器开启成功，"<<"端口号："<<port;
+
+    //登录端口
+    if(this->tcpServer->listen(QHostAddress::Any,port))
+        connect(this->tcpServer,SIGNAL(newConnection()),this,SLOT(newConnect()));
+    qDebug()<<"登录服务开启成功，"<<"端口号："<<port;
     this->ui->label_SS->setText("Running...");
 
+    //注册端口
+    if(this->tcpReg->listen(QHostAddress::Any,regestPort))
+        connect(this->tcpReg,SIGNAL(newConnection()),this,SLOT(newRegistConnect()));
+    qDebug()<<"注册服务开启成功，"<<"端口号："<<regestPort;
 }
 
 /**
@@ -68,11 +81,14 @@ void MainWindow::startTcpServer()
  */
 void MainWindow::closeTcpServer()
 {
-    if(this->tcpSocket != NULL) {
+    if(this->tcpSocket != nullptr) {
         this->tcpSocket->close();
     }
-    if(this->tcpServer != NULL) {
+    if(this->tcpServer != nullptr) {
         this->tcpServer->close();
+    }
+    if(this->tcpServer != nullptr) {
+        this->tcpReg->close();
     }
 
     this->ui->label_SS->setText("Stop.");
@@ -84,8 +100,14 @@ void MainWindow::closeTcpServer()
  */
 void MainWindow::newConnect()
 {
-    this->tcpSocket = this->tcpServer->nextPendingConnection();
+    this->tcpSocket = this->tcpServer->nextPendingConnection();//获取连接进来的socket
     connect(this->tcpSocket,SIGNAL(readyRead()),this,SLOT(readLoginMessages()));
+}
+
+void MainWindow::newRegistConnect()
+{
+    this->tcpSocket = this->tcpReg->nextPendingConnection();//获取连接进来的socket
+    connect(this->tcpSocket,SIGNAL(readyRead()),this,SLOT(readRegistMessages()));
 }
 
 /**
@@ -127,10 +149,10 @@ bool MainWindow::verify(QString msg)
         QString tmp = query.value(1).toString() + query.value(3).toString();
         qDebug()<<"name:"<< query.value(1).toString()<<"pwd"<<query.value(3).toString();
         if(tmp == msg) {
-            //产生token码,QString转char*类型
             std::string name = query.value(1).toString().toStdString();
             const char* user = name.c_str();
             //qDebug() << "user: "<< user;
+            //产生token码,QString转char*类型
             set_token(user,token);
             return true;
         }
@@ -141,9 +163,9 @@ bool MainWindow::verify(QString msg)
 
 int MainWindow::set_token(const char* user, char *token)
 {
-
+    //链接redis
     redisContext* pRedisContext=(redisContext*)redisConnect("127.0.0.1",6379);
-    if(pRedisContext==NULL)
+    if(pRedisContext==nullptr)
         {
             printf("Error:连接redis失败\n");
             return false;
@@ -171,15 +193,14 @@ int MainWindow::set_token(const char* user, char *token)
          strcat(token, str);
         }
     int ret =0;
-    // redis保存此字符串，用户名：token,
+    // redis保存此字符串，用户名，token,
     redisReply * reply = (redisReply*)redisCommand(pRedisContext,"SET %s %s",user,token);
     qDebug()<< "user and token: " << user<<"    " << token;
-    if (NULL != reply)
+    if (nullptr != reply)
         {
             freeReplyObject(reply);
         }
     return ret;
-
 }
 
 /**
@@ -198,15 +219,104 @@ void MainWindow::readLoginMessages()
     this->sendLoginMessages(msg);
 }
 
+
+void MainWindow::readRegistMessages()
+{
+    int ret;
+    QString out;
+    QTextCodec *codec = QTextCodec::codecForName("utf8");
+    QByteArray allData = this->tcpSocket->readAll();
+    //使用utf8编码，这样才可以显示中文
+    QString all = codec->toUnicode(allData);
+    ret = user_regist(allData);
+    QString str = "001";
+    if (ret == 0) //注册成功
+    {
+        qDebug()<<"注册成功";
+        sendLoginMessages(str);
+    }
+}
+
 /**
  * @brief MainWindow::sendMessages 发送回复消息，以说明登录验证是否成功。
  *      如果回复"true"，表示验证成功；否则，回复为"false",表示验证失败。
  */
 void MainWindow::sendLoginMessages(QString msg)
 {
+    if(msg == nullptr)
+        return;
     this->tcpSocket->write(msg.toStdString().c_str(),
                            strlen(msg.toStdString().c_str()));
 }
+
+
+void MainWindow::get_reg_info(QByteArray reg_buf,QString user, QString nick_name, QString pwd, QString tel, QString email)
+{
+        /*json数据如下
+        {
+            userName:xxxx,
+            nickName:xxx,
+            firstPwd:xxx,
+            phone:xxx,
+            email:xxx
+        }
+        */
+        //解析json包
+    QJsonParseError jsonError;
+    QJsonDocument doucment = QJsonDocument::fromJson(reg_buf, &jsonError);  // 转化为 JSON 文档
+    if (!doucment.isNull() && (jsonError.error == QJsonParseError::NoError)) {  // 解析未发生错误
+        if (doucment.isObject()) { // JSON 文档为对象
+            QJsonObject object = doucment.object();  // 转化为对象
+            if (object.contains("userName")) {  // 包含指定的 key
+                QJsonValue value = object.value("userName");  // 获取指定 key 对应的 value
+                if (value.isString()) {  // 判断 value 是否为字符串
+                    user = value.toString();  // 将 value 转化为字符串
+                }
+            }
+            if (object.contains("nickName")) {
+                QJsonValue value = object.value("nickName");
+                if (value.isString()) {
+                    nick_name = value.toString();
+                }
+            }
+            if (object.contains("firstPwd")) {
+                QJsonValue value = object.value("firstPwd");
+                if (value.isString()) {
+                    pwd = value.toString();
+                }
+            }
+            if (object.contains("phone")) {
+                QJsonValue value = object.value("phone");
+                if (value.isString()) {
+                    tel = value.toString();
+                }
+            }
+            if (object.contains("email")) {
+                QJsonValue value = object.value("email");
+                if (value.isString()) {
+                    email = value.toString();
+                }
+            }
+        }
+    }
+    qDebug()<<"注册信息包："<<user<<" "<<nick_name<<" "<<pwd<<" "<<tel<<" "<<email;
+}
+
+int MainWindow::user_regist(QByteArray reg_buf)
+{
+    int ret = 0;
+
+    //获取注册信息
+    QString user;
+    QString nick_name;
+    QString pwd;
+    QString phone;
+    QString email;
+    get_reg_info(reg_buf,user,nick_name,pwd,phone,email);
+
+    return ret;
+}
+
 
 /**
  * @brief QT获取本机IP地址
