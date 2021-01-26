@@ -54,7 +54,6 @@ void MainWindow::initConnect()
     connect(this->ui->pushButton_Close,SIGNAL(clicked()),this,SLOT(closeTcpServer()));
 }
 
-
 /**
  * @brief MainWindow::startTcpServer 开启服务器
  */
@@ -64,13 +63,13 @@ void MainWindow::startTcpServer()
     this->tcpReg = new QTcpServer(this);
     int port = this->ui->port_edit->text().toUInt();
 
-    //登录端口
+    //登录端口,可在控制台输入端口号
     if(this->tcpServer->listen(QHostAddress::Any,port))
         connect(this->tcpServer,SIGNAL(newConnection()),this,SLOT(newConnect()));
     qDebug()<<"登录服务开启成功，"<<"端口号："<<port;
     this->ui->label_SS->setText("Running...");
 
-    //注册端口
+    //注册端口，目前固定端口号
     if(this->tcpReg->listen(QHostAddress::Any,regestPort))
         connect(this->tcpReg,SIGNAL(newConnection()),this,SLOT(newRegistConnect()));
     qDebug()<<"注册服务开启成功，"<<"端口号："<<regestPort;
@@ -124,7 +123,7 @@ bool MainWindow::verify(QString msg)
     db.setHostName("127.0.0.1");  //database ip address
     db.setUserName("root");   //database username
     db.setPassword(" ");   //database password
-    db.setDatabaseName("cloud_disk");     //database table name
+    db.setDatabaseName("cloud_disk");     //database name
     if(!db.open()){
         qDebug()<<"fail to connect mysql:"<< db.lastError().text();
         QMessageBox::information(this, "信息提示", "mysql数据库连接失败.",
@@ -154,6 +153,7 @@ bool MainWindow::verify(QString msg)
             //qDebug() << "user: "<< user;
             //产生token码,QString转char*类型
             set_token(user,token);
+            db.close();
             return true;
         }
     }
@@ -192,7 +192,6 @@ int MainWindow::set_token(const char* user, char *token)
          sprintf(str, "%02x", rand_num[i]);
          strcat(token, str);
         }
-    int ret =0;
     // redis保存此字符串，用户名，token,
     redisReply * reply = (redisReply*)redisCommand(pRedisContext,"SET %s %s",user,token);
     qDebug()<< "user and token: " << user<<"    " << token;
@@ -200,7 +199,7 @@ int MainWindow::set_token(const char* user, char *token)
         {
             freeReplyObject(reply);
         }
-    return ret;
+    return 0;
 }
 
 /**
@@ -222,13 +221,11 @@ void MainWindow::readLoginMessages()
 
 void MainWindow::readRegistMessages()
 {
-    int ret;
-    QString out;
     QTextCodec *codec = QTextCodec::codecForName("utf8");
     QByteArray allData = this->tcpSocket->readAll();
     //使用utf8编码，这样才可以显示中文
     QString all = codec->toUnicode(allData);
-    ret = user_regist(allData);
+    int ret = user_regist(allData);
     QString str = "001";
     if (ret == 0) //注册成功
     {
@@ -250,7 +247,7 @@ void MainWindow::sendLoginMessages(QString msg)
 }
 
 
-void MainWindow::get_reg_info(QByteArray reg_buf,QString user, QString nick_name, QString pwd, QString tel, QString email)
+int MainWindow::get_reg_info(QByteArray reg_buf,QString user, QString nick_name, QString pwd, QString tel, QString email)
 {
         /*json数据如下
         {
@@ -298,23 +295,21 @@ void MainWindow::get_reg_info(QByteArray reg_buf,QString user, QString nick_name
                 }
             }
         }
+        return 0;
     }
+    return -1;
     qDebug()<<"注册信息包："<<user<<" "<<nick_name<<" "<<pwd<<" "<<tel<<" "<<email;
 }
 
 int MainWindow::user_regist(QByteArray reg_buf)
 {
-    int ret = 0;
-
     //获取注册信息
     QString user;
     QString nick_name;
     QString pwd;
     QString phone;
     QString email;
-    get_reg_info(reg_buf,user,nick_name,pwd,phone,email);
-
-    return ret;
+    return get_reg_info(reg_buf,user,nick_name,pwd,phone,email);
 }
 
 
